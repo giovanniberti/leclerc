@@ -1,6 +1,7 @@
 import asyncio
 from elasticsearch import AsyncElasticsearch
 from aiostream import stream, pipe
+import kuzu
 
 
 ES_ADDRESS = "http://localhost:9201"
@@ -45,24 +46,71 @@ async def main():
             ]
         }
     }
+    db = kuzu.Database("kuzu-db")
+    conn = kuzu.Connection(db)
 
-    search_stream = await search(query, point_in_time)
-    total_hits = 0
-
-    async def f(hits):
-        await process_hits(hits, conn)
+    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration INT64, PRIMARY KEY (id))")
+    conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
 
     search_stream = (
         await search(query, point_in_time)
-        | pipe.action(f)
+        | pipe.action(lambda hits: process_hits(hits, db))
     )
 
     await search_stream
     await client.close_point_in_time(id=point_in_time)
 
 
-async def process_hits(hits, conn):
-    print(f"{len(hits)}")
+def process_hits(hits, db):
+    conn = kuzu.Connection(db)
+
+    for hit in hits:
+        document = hit["_source"]
+        parent_id = None
+
+        if "transaction" in document:
+            root = document["transaction"]
+        else:
+            root = document["span"]
+            parent_id = document["parent"]["id"]
+
+        operation_name = root["name"]
+        duration = root["duration"]["us"]
+        timestamp = document["@timestamp"]
+        trace_id = document["trace"]["id"]
+        span_id = document["span"]["id"]
+
+        assert operation_name is not None
+        assert duration is not None
+        assert timestamp is not None
+        assert trace_id is not None
+        assert span_id is not None
+
+        conn.execute("""
+            MERGE (s: Span { id: $span_id })
+            ON CREATE SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration = $duration, s.name = $operation_name
+            ON MATCH  SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration = $duration, s.name = $operation_name
+        """, parameters={
+            'span_id': span_id,
+            'trace_id': trace_id,
+            'timestamp': timestamp,
+            'duration': duration,
+            'operation_name': operation_name
+        })
+
+        if parent_id is not None:
+            conn.execute("MERGE (s: Span { id: $parent_id })", parameters={
+                'parent_id': parent_id
+            })
+
+            conn.execute("""
+                MATCH (s1: Span), (s2: Span)
+                WHERE s1.id = $parent_id AND s2.id = $span_id
+                CREATE (s1)-[:HasChild]->(s2)
+            """, parameters={
+                'parent_id': parent_id,
+                'span_id': span_id
+            })
 
 
 async def search(query, point_in_time):
@@ -77,7 +125,7 @@ async def search(query, point_in_time):
 
 async def search_in_slice(query, point_in_time, slice, max_slices):
     slice_hits = 0
-    pit_keep_alive = "1m"
+    pit_keep_alive = "5m"
     max_returned_hits = 10_000
     search_after = None
     i = 0
@@ -95,7 +143,7 @@ async def search_in_slice(query, point_in_time, slice, max_slices):
             pit={"id": point_in_time, "keep_alive": pit_keep_alive},
             allow_partial_search_results=False,
             query=query,
-            timeout="60s",
+            timeout="5m",
             search_after=search_after,
             size=max_returned_hits,
             sort={
