@@ -34,7 +34,10 @@ async def main():
     print(f"Got {min(hits, max_returned_hits)} (out of {hits}) hits:")
     for hit in resp["hits"]["hits"]:
         data = hit["_source"]
-        print(f"span id: {data['span']['id']} span duration: {data['span']['duration']['us']} us")
+        if "transaction" in data:
+            print(f"transaction id: {data['transaction']['id']} name: \"{data['transaction']['name']}\" transaction duration: {data['transaction']['duration']['us']} us")
+        else:
+            print(f"span id: {data['span']['id']} name: \"{data['span']['name']}\" span duration: {data['span']['duration']['us']} us")
 
 
 
