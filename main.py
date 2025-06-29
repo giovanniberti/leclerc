@@ -6,6 +6,8 @@ from aiostream import stream, pipe
 import kuzu
 import pytimeparse
 
+from analysis import analyze_runs
+
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -15,6 +17,8 @@ async def main():
     parser.add_argument('-e', '--elastic', help='URL of the Elasticsearch instance containing traces for both the baseline and the mutant')
     parser.add_argument('-b', '--baseline-elastic', help='URL of the Elasticsearch instance containing traces for the baseline')
     parser.add_argument('-m', '--mutant-elastic', help='URL of the Elasticsearch instance containing traces for the mutant')
+    
+    parser.add_argument('-d', '--database', help='Path to the Kuzu database for already ingested data')
     
     parser.add_argument('-n', '--service-name', help='Name of the service to filter spans for. Corresponding to `service.name` inside OpenTelemetry spans')
     parser.add_argument('-s', '--span-name', help='Name of the span to be tested for performance differences', required=True)
@@ -35,12 +39,16 @@ async def main():
     
     args = parser.parse_args()
     
-    if not args.elastic and (not args.elastic_baseline or not args.elastic_mutant):
-        print("Must specify either --elastic or both --elastic-baseline and --elastic-mutant")
+    if not args.database and not args.elastic and (not args.baseline_elastic or not args.mutant_elastic):
+        print("Must specify either --elastic or both --baseline-elastic and --mutant-elastic or --database")
         exit(1)
-    
+
     if args.duration and args.baseline_duration and args.mutant_duration:
         print("Cannot specify together --duration, --baseline-duration and --mutant-duration")
+        exit(1)
+
+    if args.database and (args.elastic or args.baseline_elastic or args.mutant_elastic):
+        print("Cannot specify --database with --baseline-elastic or --mutant-elastic")
         exit(1)
 
     baseline_duration = args.baseline_duration or args.duration
@@ -49,11 +57,9 @@ async def main():
     mutant_duration = args.mutant_duration or args.duration
     mutant_end = args.mutant_end or (args.mutant_start + mutant_duration)
 
-    db = kuzu.Database("kuzu-db")
+    database_path = args.database if args.database else "kuzu-db"
+    db = kuzu.Database(database_path)
     conn = kuzu.Connection(db)
-
-    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration_us INT64, PRIMARY KEY (id))")
-    conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
 
     parameters = []
     if args.elastic is not None:
@@ -91,8 +97,24 @@ async def main():
             'db': db
         })
 
-    for p in parameters:
-        await import_traces(**p)
+    if not args.database:
+        conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration_us INT64, PRIMARY KEY (id))")
+        conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
+
+        for p in parameters:
+            await import_traces(**p)
+
+    differing_paths = analyze_runs(
+        conn,
+        args.baseline_start,
+        baseline_end,
+        args.mutant_start,
+        mutant_end,
+        [args.span_name]
+    )
+
+    print("Got differing paths:", differing_paths)
+
 
 def parse_duration(s: str) -> timedelta:
     return timedelta(seconds=pytimeparse.parse(s))
