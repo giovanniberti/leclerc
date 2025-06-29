@@ -116,7 +116,7 @@ async def search_in_slice(query, point_in_time, slice, max_slices):
             break
 
         i += 1
-        print(f"[slice {slice}, search {i}] {hits_size} hits")
+        print(f"[slice {slice}, search {i}] {format(hits_size, '_d').replace('_', ' ')} hits")
 
         yield hits
 
@@ -126,7 +126,7 @@ async def search_in_slice(query, point_in_time, slice, max_slices):
         if hits_size < max_returned_hits:
             break
 
-    print(f"[slice {slice}] {slice_hits} hits")
+    print(f"[slice {slice}] Processed {format(slice_hits, '_d').replace('_', ' ')} hits")
 
 
 
