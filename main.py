@@ -1,5 +1,7 @@
 import asyncio
 from elasticsearch import AsyncElasticsearch
+from aiostream import stream, pipe
+
 
 ES_ADDRESS = "http://localhost:9201"
 MIN_SEARCH_SLICES = 5
@@ -44,49 +46,33 @@ async def main():
         }
     }
 
-    results = await search(query, point_in_time)
-    total_hits = results
+    search_stream = await search(query, point_in_time)
+    total_hits = 0
 
-    print(f"{total_hits=}")
+    async def f(hits):
+        await process_hits(hits, conn)
+
+    search_stream = (
+        await search(query, point_in_time)
+        | pipe.action(f)
+    )
+
+    await search_stream
     await client.close_point_in_time(id=point_in_time)
 
 
-class GatheringTaskGroup(asyncio.TaskGroup):
-    def __init__(self):
-        super().__init__()
-        self.__tasks = []
-
-    def create_task(self, coro, *, name=None, context=None):
-        task = super().create_task(coro, name=name, context=context)
-        self.__tasks.append(task)
-        return task
-
-    def results(self) -> list:
-        return [task.result() for task in self.__tasks]
+async def process_hits(hits, conn):
+    print(f"{len(hits)}")
 
 
 async def search(query, point_in_time):
     nodes = len((await client.nodes.info())["nodes"].keys())
     slices = nodes
-    hits = 0
 
     if slices == 1:
-        hits = await process_slice(search_in_slice(query, point_in_time, 0, 1))
+        return stream.merge(search_in_slice(query, point_in_time, 0, 1))
     else:
-        async with GatheringTaskGroup() as tg:
-            for i in range(slices):
-                tg.create_task(process_slice(search_in_slice(query, point_in_time, i, slices)))
-
-        hits = sum(tg.results())
-
-    return hits
-
-async def process_slice(f):
-    s = 0
-    async for slice_hits in f:
-        print(f"Got {len(slice_hits)} hits!")
-        s += len(slice_hits)
-    return s
+        return stream.merge(*[search_in_slice(query, point_in_time, i, slices) for i in range(slices)])
 
 
 async def search_in_slice(query, point_in_time, slice, max_slices):

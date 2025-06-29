@@ -5,5 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aiostream>=0.6.4",
     "elasticsearch[async]>=8.18.0,<9.0.0",
 ]
