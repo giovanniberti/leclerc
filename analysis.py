@@ -1,27 +1,31 @@
 from dataclasses import dataclass
 from typing import Any
-from scipy.stats import quantile_test
+import scipy.stats
 
 @dataclass(frozen=True)
 class PathResults:
     path: Any
     stats: Any
+    rank_biserial_correlation: Any
 
     def __repr__(self):
         return f"PathResults({' > '.join(self.path)}: {self.stats})"
 
-def analyze_runs(conn, baseline_start, baseline_end, mutant_start, mutant_end, span_path, percentile=0.99, significance_level=0.05):
+def analyze_runs(conn, baseline_start, baseline_end, mutant_start, mutant_end, span_path, correlation_threshold=0.1):
     path_string = ' > '.join(span_path)
     print(f"Analyzing path {path_string}")
 
     baseline_df = fetch_times(conn, baseline_start, baseline_end, span_path)
     mutant_df = fetch_times(conn, mutant_start, mutant_end, span_path)
 
-    baseline_quantile = baseline_df.quantile(percentile)
-    test_results = quantile_test(mutant_df, q=baseline_quantile, p=percentile)
+    print(f"Fetched samples for path {path_string}, baseline: {len(baseline_df)} samples, mutant: {len(mutant_df)} samples")
 
-    print(f"Tested path {path_string} at {percentile=} with significance level {significance_level}: pvalue = {test_results.pvalue}")
-    if test_results.pvalue < significance_level:
+    test_results = scipy.stats.mannwhitneyu(baseline_df, mutant_df)
+    common_language_effect_size = (test_results.statistic / (len(baseline_df) * len(mutant_df))).item()
+    rank_biserial_correlation = 2 * common_language_effect_size - 1
+
+    print(f"Tested path {path_string} with result {rank_biserial_correlation=}")
+    if abs(rank_biserial_correlation) > correlation_threshold:
         baseline_child_spans = set(fetch_child_spans(conn, baseline_start, baseline_end, span_path).to_list())
         mutant_child_spans = set(fetch_child_spans(conn, mutant_start, mutant_end, span_path).to_list())
         child_spans = set.intersection(baseline_child_spans, mutant_child_spans)
@@ -35,7 +39,7 @@ def analyze_runs(conn, baseline_start, baseline_end, mutant_start, mutant_end, s
             child_results.extend(analyze_runs(conn, baseline_start, baseline_end, mutant_start, mutant_end, child_span))
 
         if not child_results:
-            return [PathResults(span_path, test_results)]
+            return [PathResults(span_path, test_results, rank_biserial_correlation)]
         else:
             return child_results
     else:

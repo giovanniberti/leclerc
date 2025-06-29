@@ -117,7 +117,7 @@ async def main():
     print(f"Differing paths: {len(differing_paths)}\n")
     for d in differing_paths:
         path = ' > '.join(d.path)
-        print(f"{path}: {d.stats}")
+        print(f"{path}: rank_biserial_corr = {d.rank_biserial_correlation}")
 
 
 def parse_duration(s: str) -> timedelta:
