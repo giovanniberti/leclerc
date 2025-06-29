@@ -1,14 +1,105 @@
+import argparse
 import asyncio
+from datetime import datetime, timedelta
 from elasticsearch import AsyncElasticsearch
 from aiostream import stream, pipe
 import kuzu
+import pytimeparse
 
-
-ES_ADDRESS = "http://localhost:9201"
-MIN_SEARCH_SLICES = 5
-client = AsyncElasticsearch(ES_ADDRESS)
 
 async def main():
+    parser = argparse.ArgumentParser(
+        prog='leclerc',
+        description='An analyzer of performance differences between a baseline and a mutant using Elastic APM traces'
+    )
+    parser.add_argument('-e', '--elastic', help='URL of the Elasticsearch instance containing traces for both the baseline and the mutant')
+    parser.add_argument('-b', '--baseline-elastic', help='URL of the Elasticsearch instance containing traces for the baseline')
+    parser.add_argument('-m', '--mutant-elastic', help='URL of the Elasticsearch instance containing traces for the mutant')
+    
+    parser.add_argument('-n', '--service-name', help='Name of the service to filter spans for. Corresponding to `service.name` inside OpenTelemetry spans')
+    parser.add_argument('-s', '--span-name', help='Name of the span to be tested for performance differences', required=True)
+
+    parser.add_argument('--duration', help='ISO 8601 date time of the start of trace recording. Syntax: NUMBER UNIT where unit is `s`, `m`, `h`. Example: --duration 15m', type=parse_duration)
+    
+    parser.add_argument('--baseline-start', help='ISO 8601 date time of the start of baseline trace recording', required=True, type=datetime.fromisoformat)
+
+    baseline_end_datetime = parser.add_mutually_exclusive_group()
+    baseline_end_datetime.add_argument('--baseline-end', help='ISO 8601 date time of the end of baseline trace recording', type=datetime.fromisoformat)
+    baseline_end_datetime.add_argument('--baseline-duration', help='Duration of the baseline trace recording. Syntax: NUMBER UNIT where unit is `s`, `m`, `h`. Example: --baseline-duration 15m. Overrides --duration', type=parse_duration)
+    
+    parser.add_argument('--mutant-start', help='ISO 8601 date time of the start of mutant trace recording', required=True, type=datetime.fromisoformat)
+
+    mutant_end_datetime = parser.add_mutually_exclusive_group()
+    mutant_end_datetime.add_argument('--mutant-end', help='ISO 8601 date time of the end of mutant trace recording', type=datetime.fromisoformat)
+    mutant_end_datetime.add_argument('--mutant-duration', help='Duration of the mutant trace recording. Syntax: NUMBER UNIT where unit is `s`, `m`, `h`. Example: --mutant-duration 15m. Overrides --duration', type=parse_duration)
+    
+    args = parser.parse_args()
+    
+    if not args.elastic and (not args.elastic_baseline or not args.elastic_mutant):
+        print("Must specify either --elastic or both --elastic-baseline and --elastic-mutant")
+        exit(1)
+    
+    if args.duration and args.baseline_duration and args.mutant_duration:
+        print("Cannot specify together --duration, --baseline-duration and --mutant-duration")
+        exit(1)
+
+    baseline_duration = args.baseline_duration or args.duration
+    baseline_end = args.baseline_end or (args.baseline_start + baseline_duration)
+
+    mutant_duration = args.mutant_duration or args.duration
+    mutant_end = args.mutant_end or (args.mutant_start + mutant_duration)
+
+    db = kuzu.Database("kuzu-db")
+    conn = kuzu.Connection(db)
+
+    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration_us INT64, PRIMARY KEY (id))")
+    conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
+
+    parameters = []
+    if args.elastic is not None:
+        parameters.append({
+            'elastic_address': args.elastic,
+            'span_name': args.span_name,
+            'start_time': args.baseline_start,
+            'end_time': baseline_end,
+            'service_name': args.service_name,
+            'db': db
+        })
+        parameters.append({
+            'elastic_address': args.elastic,
+            'span_name': args.span_name,
+            'start_time': args.mutant_start,
+            'end_time': mutant_end,
+            'service_name': args.service_name,
+            'db': db
+        })
+    else:
+        parameters.append({
+            'elastic_address': args.baseline_elastic,
+            'span_name': args.span_name,
+            'start_time': args.baseline_start,
+            'end_time': baseline_end,
+            'service_name': args.service_name,
+            'db': db
+        })
+        parameters.append({
+            'elastic_address': args.mutant_elastic,
+            'span_name': args.span_name,
+            'start_time': args.mutant_start,
+            'end_time': mutant_end,
+            'service_name': args.service_name,
+            'db': db
+        })
+
+    for p in parameters:
+        await import_traces(**p)
+
+def parse_duration(s: str) -> timedelta:
+    return timedelta(seconds=pytimeparse.parse(s))
+
+async def import_traces(elastic_address, span_name, start_time, end_time, service_name, db):
+    client = AsyncElasticsearch(elastic_address)
+
     try:
         await client.info(
             error_trace=True,
@@ -16,7 +107,7 @@ async def main():
             pretty=True
         )
     except Exception as e:
-        print(f"Call to Elastic Info API failed. Are you sure Elasticsearch is running on {ES_ADDRESS}?")
+        print(f"Call to Elastic Info API failed. Are you sure Elasticsearch is running on {elastic_address}?")
         print(e)
         exit(1)
 
@@ -27,33 +118,29 @@ async def main():
         index=".ds-traces*"
     ))["id"]
 
+    service_name_filter = f"service.name = '{service_name}'" if service_name else '*'
     query = {
         "bool": {
             "must": [
                 {
                     "range": {
                         "@timestamp": {
-                            "gt": "2025-05-02T12:08:00.000+02:00",
-                            "lt": "2025-05-02T16:30:00.000+02:00"
+                            "gt": start_time,
+                            "lt": end_time
                         }
                     }
                 },
                 {
                     "query_string": {
-                        "query": 'service.name: "API"'
+                        "query": service_name_filter
                     }
                 }
             ]
         }
     }
-    db = kuzu.Database("kuzu-db")
-    conn = kuzu.Connection(db)
-
-    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration_us INT64, PRIMARY KEY (id))")
-    conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
 
     search_stream = (
-        await search(query, point_in_time)
+        await search(client, query, point_in_time)
         | pipe.action(lambda hits: process_hits(hits, db))
     )
 
@@ -113,17 +200,17 @@ def process_hits(hits, db):
             })
 
 
-async def search(query, point_in_time):
+async def search(client, query, point_in_time):
     nodes = len((await client.nodes.info())["nodes"].keys())
     slices = nodes
 
     if slices == 1:
-        return stream.merge(search_in_slice(query, point_in_time, 0, 1))
+        return stream.merge(search_in_slice(client, query, point_in_time, 0, 1))
     else:
-        return stream.merge(*[search_in_slice(query, point_in_time, i, slices) for i in range(slices)])
+        return stream.merge(*[search_in_slice(client, query, point_in_time, i, slices) for i in range(slices)])
 
 
-async def search_in_slice(query, point_in_time, slice, max_slices):
+async def search_in_slice(client, query, point_in_time, slice, max_slices):
     slice_hits = 0
     pit_keep_alive = "5m"
     max_returned_hits = 10_000

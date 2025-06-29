@@ -10,4 +10,5 @@ dependencies = [
     "kuzu>=0.9.0",
     "polars>=1.29.0",
     "pyarrow>=20.0.0",
+    "pytimeparse>=1.1.8",
 ]
