@@ -7,6 +7,9 @@ class PathResults:
     path: Any
     stats: Any
 
+    def __repr__(self):
+        return f"PathResults({' > '.join(self.path)}: {self.stats})"
+
 def analyze_runs(conn, baseline_start, baseline_end, mutant_start, mutant_end, span_path, percentile=0.99, significance_level=0.05):
     path_string = ' > '.join(span_path)
     print(f"Analyzing path {path_string}")

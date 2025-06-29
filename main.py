@@ -113,7 +113,11 @@ async def main():
         [args.span_name]
     )
 
-    print("Got differing paths:", differing_paths)
+    print("\n=== REPORT ===")
+    print(f"Differing paths: {len(differing_paths)}\n")
+    for d in differing_paths:
+        path = ' > '.join(d.path)
+        print(f"{path}: {d.stats}")
 
 
 def parse_duration(s: str) -> timedelta:
