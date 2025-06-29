@@ -25,7 +25,6 @@ async def main():
 
     max_returned_hits = 10_000
     search_after = None
-    hits = 1
     i = 0
     total_hits = 0
     
