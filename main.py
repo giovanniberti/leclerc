@@ -30,8 +30,8 @@ async def main():
                 {
                     "range": {
                         "@timestamp": {
-                            "gt": "2025-04-30T16:12:00.000+02:00",
-                            "lt": "2025-04-30T16:30:00.000+02:00"
+                            "gt": "2025-05-02T12:08:00.000+02:00",
+                            "lt": "2025-05-02T16:30:00.000+02:00"
                         }
                     }
                 },
@@ -71,20 +71,25 @@ async def search(query, point_in_time):
     hits = 0
 
     if slices == 1:
-        hits = await search_in_slice(query, point_in_time, 0, 1)
+        hits = await process_slice(search_in_slice(query, point_in_time, 0, 1))
     else:
         async with GatheringTaskGroup() as tg:
             for i in range(slices):
-                tg.create_task(search_in_slice(query, point_in_time, i, slices))
+                tg.create_task(process_slice(search_in_slice(query, point_in_time, i, slices)))
 
-        results = tg.results()
-        for r in results:
-            hits += r
+        hits = sum(tg.results())
 
     return hits
 
+async def process_slice(f):
+    s = 0
+    async for slice_hits in f:
+        print(f"Got {len(slice_hits)} hits!")
+        s += len(slice_hits)
+    return s
 
-async def search_in_slice(query, point_in_time, slice, max_slices, cb=lambda _: None):
+
+async def search_in_slice(query, point_in_time, slice, max_slices):
     slice_hits = 0
     pit_keep_alive = "1m"
     max_returned_hits = 10_000
@@ -126,7 +131,8 @@ async def search_in_slice(query, point_in_time, slice, max_slices, cb=lambda _: 
 
         i += 1
         print(f"[slice {slice}, search {i}] {hits_size} hits")
-        cb(hits)
+
+        yield hits
 
         point_in_time = resp["pit_id"]
         search_after = resp['hits']['hits'][-1]['sort']
@@ -135,7 +141,6 @@ async def search_in_slice(query, point_in_time, slice, max_slices, cb=lambda _: 
             break
 
     print(f"[slice {slice}] {slice_hits} hits")
-    return slice_hits
 
 
 
