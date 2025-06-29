@@ -176,6 +176,7 @@ async def import_traces(elastic_address, span_name, start_time, end_time, servic
 
 def process_hits(hits, db):
     conn = kuzu.Connection(db)
+    print("Processing hits...")
 
     for hit in hits:
         document = hit["_source"]
@@ -224,6 +225,8 @@ def process_hits(hits, db):
                 'parent_id': parent_id,
                 'span_id': span_id
             })
+
+    print("Processing done")
 
 
 async def search(client, query, point_in_time):
