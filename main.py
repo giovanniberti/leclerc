@@ -49,7 +49,7 @@ async def main():
     db = kuzu.Database("kuzu-db")
     conn = kuzu.Connection(db)
 
-    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration INT64, PRIMARY KEY (id))")
+    conn.execute("CREATE NODE TABLE Span(id STRING, name STRING, trace_id STRING, timestamp TIMESTAMP, duration_us INT64, PRIMARY KEY (id))")
     conn.execute("CREATE REL TABLE HasChild(FROM Span TO Span)")
 
     search_stream = (
@@ -75,26 +75,26 @@ def process_hits(hits, db):
             parent_id = document["parent"]["id"]
 
         operation_name = root["name"]
-        duration = root["duration"]["us"]
+        duration_us = root["duration"]["us"]
         timestamp = document["@timestamp"]
         trace_id = document["trace"]["id"]
         span_id = document["span"]["id"]
 
         assert operation_name is not None
-        assert duration is not None
+        assert duration_us is not None
         assert timestamp is not None
         assert trace_id is not None
         assert span_id is not None
 
         conn.execute("""
             MERGE (s: Span { id: $span_id })
-            ON CREATE SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration = $duration, s.name = $operation_name
-            ON MATCH  SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration = $duration, s.name = $operation_name
+            ON CREATE SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration_us = $duration_us, s.name = $operation_name
+            ON MATCH  SET s.trace_id = $trace_id, s.timestamp = timestamp($timestamp), s.duration_us = $duration_us, s.name = $operation_name
         """, parameters={
             'span_id': span_id,
             'trace_id': trace_id,
             'timestamp': timestamp,
-            'duration': duration,
+            'duration_us': duration_us,
             'operation_name': operation_name
         })
 
