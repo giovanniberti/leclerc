@@ -1,9 +1,21 @@
 import asyncio
 from elasticsearch import AsyncElasticsearch
 
-client = AsyncElasticsearch("http://localhost:9201")
+ES_ADDRESS = "http://localhost:9201"
+client = AsyncElasticsearch(ES_ADDRESS)
 
 async def main():
+    try:
+        await client.info(
+            error_trace=True,
+            human=True,
+            pretty=True
+        )
+    except Exception as e:
+        print(f"Call to Elastic Info API failed. Are you sure Elasticsearch is running on {ES_ADDRESS}?")
+        print(e)
+        exit(1)
+
     pit_keep_alive = "1m"
     point_in_time = (await client.open_point_in_time(
         keep_alive=pit_keep_alive,
