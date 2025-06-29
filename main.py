@@ -9,8 +9,21 @@ async def main():
         index=".ds-traces*",
         body={
             "query": {
-                "query_string": {
-                    "query": 'trace.id: "74c3dfca1ea4aa65b0c73780313a33cc"',
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gt": "2025-04-17T09:40:39.809Z"
+                                }
+                            }
+                        },
+                        {
+                            "query_string": {
+                                "query": "trace.id: \"74c3dfca1ea4aa65b0c73780313a33cc\""
+                            }
+                        }
+                    ]
                 }
             },
             "size": max_returned_hits
